@@ -30,3 +30,24 @@ Di Linux, jalankan `python test_chat.py`. Script menggunakan proses server dan c
 
 ## Batasan
 Aplikasi pembelajaran, bukan layanan chat internet produksi. Server memakai timeout pengiriman atau batas antrean, tetapi tidak ada autentikasi, TLS, dan penyimpanan histori. Uji otomatis di Linux, bukan demonstrasi langsung di depan dosen. Video paket lokal adalah replay transkrip aktual, bukan rekaman desktop langsung.
+
+## Mode browser LAN dan Wi-Fi discovery (opsional)
+
+Di Termux:
+```sh
+pkg update -y
+pkg install python git iputils -y
+git clone https://github.com/jxxzy/netpro-2026.git
+cd netpro-2026/modul-07
+python lan_chat.py
+```
+Jika repo sudah ada: `cd ~/netpro-2026 && git pull --ff-only && cd modul-07`.
+
+Teman bergabung ke hotspot yang sama, membuka link HTTP port 8080 yang ditampilkan server, lalu memasukkan nickname. Tidak perlu instal Python pada perangkat client browser. Jika IP otomatis salah, gunakan IP hotspot yang sebenarnya melalui `--ip`. Untuk backend select, tambahkan `--mode select`. Hentikan server lain di port 5050 sebelum menjalankan gateway.
+
+Pemindaian opsional hanya pada hotspot sendiri atau subnet dengan izin pengelola. Contoh IP/subnet (ganti sesuai jaringan aktual):
+```sh
+python lan_chat.py --ip 192.168.43.1 --scan-cidr 192.168.43.0/24 --authorized
+```
+Atau jalankan scanner saja: `python wifi_scan.py --cidr 192.168.43.0/24 --authorized --once`.
+Hasil ICMP tampil di terminal, bukan daftar lengkap perangkat Wi-Fi. Perangkat yang menolak ping atau terisolasi mungkin tidak terdeteksi; IP yang merespons belum tentu client chat. Browser yang bergabung tercatat di terminal gateway dengan nickname dan IP. Tidak ada pemaksaan koneksi, pemindaian port, pengambilan kredensial atau pemasangan aplikasi pada perangkat lain. Jangan aktifkan discovery di jaringan kampus tanpa izin. HTTP dan TCP tidak terenkripsi, gunakan hanya jaringan tepercaya dan jangan kirim informasi sensitif. ICMP dan konektivitas perangkat nyata harus diverifikasi pada Android/jaringan aktual.
