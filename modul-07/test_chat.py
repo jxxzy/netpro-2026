@@ -73,7 +73,7 @@ def run(mode, baseline=False, two=False):
             p.wait('Koneksi ke server terputus')
             if not baseline: p.wait('Server akan dimatikan')
             else: assert 'Server akan dimatikan' not in '\n'.join(p.lines)
-            p.send(''); p.p.wait(timeout=5)
+            p.p.wait(timeout=5)
         if baseline:
             assert rc != 0 and 'KeyboardInterrupt' in '\n'.join(s.lines)
             checks.append(f'PASS: baseline traceback, exit {rc}, dua client terputus tanpa notifikasi')

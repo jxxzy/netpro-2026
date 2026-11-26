@@ -2,6 +2,8 @@ import argparse
 import logging
 import socket
 import threading
+import time
+from heartbeat import PING, PONG, TIMEOUT, keepalive
 
 clients = {}
 lock = threading.Lock()
@@ -35,11 +37,15 @@ def broadcast(data, pengirim=None):
             hapus(conn)
 
 
-def tangani_client(conn):
+def tangani_client(conn, timeout):
     """Baca pesan TCP dengan pembatas newline, kemudian broadcast."""
     buffer = b''
+    last = time.monotonic()
     try:
         while True:
+            if time.monotonic() - last >= timeout:
+                logging.info('Timeout client: %s', conn.getpeername())
+                break
             try:
                 data = conn.recv(1024)
             except socket.timeout:
@@ -49,6 +55,15 @@ def tangani_client(conn):
             buffer += data
             while b'\n' in buffer:
                 pesan, buffer = buffer.split(b'\n', 1)
+                last = time.monotonic()
+                if pesan == PING:
+                    with lock:
+                        info = clients.get(conn)
+                    if info is None:
+                        return
+                    with info[1]:
+                        conn.sendall(PONG + b'\n')
+                    continue
                 logging.info('Pesan: %s', pesan.decode('utf-8', 'replace'))
                 broadcast(pesan + b'\n', conn)
             if len(buffer) > 65536:
@@ -79,7 +94,10 @@ def main():
     parser.add_argument('--host', default='0.0.0.0')
     parser.add_argument('--port', type=int, default=5050)
     parser.add_argument('--baseline', action='store_true')
+    parser.add_argument('--timeout', type=int, default=TIMEOUT, help='Detik tanpa frame dari client')
     args = parser.parse_args()
+    if args.timeout < 2:
+        parser.error('Timeout minimum 2 detik')
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s',
                         handlers=[logging.StreamHandler(), logging.FileHandler('log_chat.txt', encoding='utf-8')])
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -96,12 +114,13 @@ def main():
             except socket.timeout:
                 continue
             conn.settimeout(1)
+            keepalive(conn)
             with lock:  # LOCK: registrasi client
                 clients[conn] = (addr, threading.Lock())
                 total = len(clients)
             logging.info('[+] %s bergabung. Total client: %d', addr, total)
             workers = [w for w in workers if w.is_alive()]
-            worker = threading.Thread(target=tangani_client, args=(conn,), daemon=True)
+            worker = threading.Thread(target=tangani_client, args=(conn, args.timeout), daemon=True)
             workers.append(worker)
             worker.start()
     except KeyboardInterrupt:

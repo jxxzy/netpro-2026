@@ -11,18 +11,19 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from heartbeat import Heartbeat, PONG, keepalive
 from urllib.parse import urlsplit, parse_qs
 
 PAGE = '''<!doctype html><html lang="id"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NETPRO | LAN Chat</title><style>
 *{box-sizing:border-box}body{font:16px system-ui;background:#101827;color:#e8edf6;margin:0}main{max-width:650px;margin:auto;padding:24px}h1{margin-bottom:4px}p{color:#b2c1d5}input,button{font:inherit;padding:12px;border-radius:10px;border:1px solid #546479}input{min-width:0;flex:1;background:#1a293d;color:white}button{background:#79ddbd;color:#10251f;font-weight:bold;cursor:pointer}form{display:flex;gap:8px;margin:12px 0}#messages{height:45vh;overflow:auto;background:#182437;border:1px solid #34445a;border-radius:12px;padding:12px;white-space:pre-wrap;overflow-wrap:anywhere}#status{font-size:14px} [hidden]{display:none!important}</style><main><h1>NETPRO LAN Chat</h1><p>Modul 7 • TCP multi-client • Jaringan lokal</p><p id="status">Masukkan nickname untuk bergabung.</p><form id="join"><input id="nick" placeholder="Nickname" maxlength="24" required><button>Gabung</button></form><section id="room" hidden><div id="messages" role="log"></div><form id="send"><input id="message" placeholder="Tulis pesan" maxlength="1000" autocomplete="off" required><button>Kirim</button></form><button id="leave">Keluar</button></section></main><script>
 const $=id=>document.getElementById(id);let token='',busy=false;
-function line(s){const d=document.createElement('div');d.textContent=s;$('messages').append(d);while($('messages').children.length>300)$('messages').firstChild.remove();$('messages').scrollTop=$('messages').scrollHeight}
-async function post(path,data){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const j=await r.json();if(!r.ok)throw Error(j.error||'Gagal');return j}
+function line(s){const d=document.createElement('div');d.textContent='['+new Date().toLocaleTimeString('id-ID')+'] '+s;$('messages').append(d);while($('messages').children.length>300)$('messages').firstChild.remove();$('messages').scrollTop=$('messages').scrollHeight}
+async function post(path,data){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data),signal:AbortSignal.timeout(5000)});const j=await r.json();if(!r.ok)throw Error(j.error||'Gagal');return j}
 function reset(s){token='';$('join').hidden=false;$('room').hidden=true;$('status').textContent=s}
 $('join').onsubmit=async e=>{e.preventDefault();if(busy)return;busy=true;try{const j=await post('/join',{nick:$('nick').value});token=j.token;$('messages').replaceChildren();$('join').hidden=true;$('room').hidden=false;$('send').hidden=false;$('status').textContent='Terhubung sebagai '+j.nick;line('Anda bergabung.')}catch(e){$('status').textContent=e.message}finally{busy=false}};
 $('send').onsubmit=async e=>{e.preventDefault();const m=$('message').value,t=token;if(!t||busy)return;busy=true;try{await post('/send',{token:t,message:m});if(token===t){line('[Saya] '+m);$('message').value=''}}catch(e){$('status').textContent=e.message}finally{busy=false}};
 $('leave').onclick=async()=>{const t=token;reset('Anda keluar.');try{await post('/leave',{token:t})}catch(e){}};
-async function poll(){const t=token;if(t){try{const r=await fetch('/poll?token='+encodeURIComponent(t),{cache:'no-store'});const j=await r.json();if(token===t){if(!r.ok)reset(j.error||'Terputus');else{j.messages.forEach(line);if(j.closed){token='';$('join').hidden=false;$('send').hidden=true;$('status').textContent='Server terputus. Buka ulang halaman untuk bergabung.'}}}}catch(e){if(token===t)$('status').textContent='Jaringan terputus; mencoba kembali...'}}setTimeout(poll,700)}poll();
+async function poll(){const t=token;if(t){try{const r=await fetch('/poll?token='+encodeURIComponent(t),{cache:'no-store',signal:AbortSignal.timeout(5000)});const j=await r.json();if(token===t){if(!r.ok)reset(j.error||'Terputus');else{j.messages.forEach(line);if(j.closed){token='';$('join').hidden=false;$('send').hidden=true;$('status').textContent='Server terputus. Buka ulang halaman untuk bergabung.'}}}}catch(e){if(token===t)$('status').textContent='Jaringan terputus; mencoba kembali...'}}setTimeout(poll,700)}poll();
 </script></html>'''
 
 sessions = {}
@@ -34,21 +35,30 @@ class Client:
         self.nick = nick
         self.sock = socket.create_connection(('127.0.0.1', port), timeout=3)
         self.sock.settimeout(None)
+        keepalive(self.sock)
         self.messages = queue.Queue(maxsize=200)
         self.last = time.monotonic()
         self.closed = False
         self.send_lock = threading.Lock()
+        self.beat = Heartbeat(self.send_bytes, lambda reason: self.close(False))
         self.send('*** '+nick+' bergabung ***')
+        self.beat.start()
         threading.Thread(target=self.read, daemon=True).start()
 
-    def send(self, text):
+    def send_bytes(self, data):
         with self.send_lock:
-            self.sock.sendall((text+'\n').encode())
+            self.sock.sendall(data)
+
+    def send(self, text):
+        self.send_bytes((text+'\n').encode())
 
     def read(self):
         try:
             with self.sock.makefile('r', encoding='utf-8', errors='replace') as f:
                 for line in f:
+                    if line.rstrip('\n').encode() == PONG:
+                        self.beat.received()
+                        continue
                     try: self.messages.put_nowait(line.rstrip('\n'))
                     except queue.Full: break
         except OSError: pass
@@ -57,6 +67,7 @@ class Client:
     def close(self, announce=True):
         if self.closed: return
         self.closed = True
+        self.beat.stop.set()
         if announce:
             try: self.send('*** '+self.nick+' keluar ***')
             except OSError: pass
